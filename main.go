@@ -1,8 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 // Options contains common options provided by user.
+// Different implementations may ignore some options.
 type Options struct {
 	DirtyIfUntracked bool
 }
@@ -14,11 +18,12 @@ type VCSInfoWanted struct {
 	Tag                   bool
 	Action                bool
 	HasRemote             bool
-	RemoteDivergedCommits bool
-	StashedCommits        bool
-	HasUntrackedFiles     bool
-	IsDirty               bool
-	DirtyFiles            bool
+	RemoteDivergedCommits bool // imply HasRemote
+	HasStashedCommits     bool
+	StashedCommits        bool // imply HasStashedCommits
+	HasUntrackedFiles     bool // do NOT imply IsDirty!
+	IsDirty               bool // may imply HasUntrackedFiles
+	DirtyFiles            bool // do NOT imply IsDirty!
 }
 
 // VCSInfo contains gathered facts about repo as general flat list, common
@@ -38,17 +43,99 @@ type VCSInfo struct {
 	StashedCommits      int
 	HasUntrackedFiles   bool // too slow to even try to find how many
 	IsDirty             bool // Untracked? || Unmerged||Deleted||Renamed||Modified||Added
-	HasUnmergedFiles    bool // only git?
+	HasAddedFiles       bool
+	HasModifiedFiles    bool
 	HasDeletedFiles     bool
 	HasRenamedFiles     bool
-	HasModifiedFiles    bool
-	HasAddedFiles       bool
-	UnmergedFiles       int
+	HasUnmergedFiles    bool // only git?
+	AddedFiles          int
+	ModifiedFiles       int
 	DeletedFiles        int
 	RenamedFiles        int
-	ModifiedFiles       int
-	AddedFiles          int
+	UnmergedFiles       int
 	// TODO Patch info
+}
+
+// Fix enforce consistent state between fields and reset fields not listed
+// in wanted.
+// It also output QA notice to note possible optimizations.
+func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
+	if facts == nil {
+		return
+	}
+
+	facts.HasRemote = facts.HasRemote ||
+		facts.RemoteAheadCommits != 0 || facts.RemoteBehindCommits != 0
+	facts.HasStashedCommits = facts.HasStashedCommits || facts.StashedCommits != 0
+	facts.HasAddedFiles = facts.HasAddedFiles || facts.AddedFiles != 0
+	facts.HasModifiedFiles = facts.HasModifiedFiles || facts.ModifiedFiles != 0
+	facts.HasDeletedFiles = facts.HasDeletedFiles || facts.DeletedFiles != 0
+	facts.HasRenamedFiles = facts.HasRenamedFiles || facts.RenamedFiles != 0
+	facts.HasUnmergedFiles = facts.HasUnmergedFiles || facts.UnmergedFiles != 0
+	facts.IsDirty = facts.IsDirty ||
+		(facts.HasUntrackedFiles && opt.DirtyIfUntracked) ||
+		facts.HasAddedFiles || facts.HasModifiedFiles || facts.HasDeletedFiles ||
+		facts.HasRenamedFiles || facts.HasUnmergedFiles
+
+	if !wanted.Revision && facts.RevisionShort != "" {
+		log.Print("QA notice: unwanted RevisionShort")
+		facts.RevisionShort = ""
+	}
+	if !wanted.Branch && facts.Branch != "" {
+		log.Print("QA notice: unwanted Branch")
+		facts.Branch = ""
+	}
+	if !wanted.Tag && facts.Tag != "" {
+		log.Print("QA notice: unwanted Tag")
+		facts.Tag = ""
+	}
+	if !wanted.Action && facts.Action != 0 {
+		log.Print("QA notice: unwanted Action")
+		facts.Action = 0
+	}
+	if (!wanted.HasRemote && !wanted.RemoteDivergedCommits) && facts.HasRemote == true {
+		log.Print("QA notice: unwanted HasRemote")
+		facts.HasRemote = false
+	}
+	if !wanted.RemoteDivergedCommits && (facts.RemoteAheadCommits != 0 || facts.RemoteBehindCommits != 0) {
+		log.Print("QA notice: unwanted Remote(Ahead|Behind)Commits")
+		facts.RemoteAheadCommits = 0
+		facts.RemoteBehindCommits = 0
+	}
+	if (!wanted.HasStashedCommits && !wanted.StashedCommits) && facts.HasStashedCommits {
+		log.Print("QA notice: unwanted HasStashedCommits")
+		facts.HasStashedCommits = false
+	}
+	if !wanted.StashedCommits && facts.StashedCommits != 0 {
+		log.Print("QA notice: unwanted StashedCommits")
+		facts.StashedCommits = 0
+	}
+	if !wanted.HasUntrackedFiles && !(wanted.IsDirty && opt.DirtyIfUntracked) && facts.HasUntrackedFiles {
+		log.Print("QA notice: unwanted HasUntrackedFiles")
+		facts.HasUntrackedFiles = false
+	}
+	if !wanted.IsDirty && !(wanted.HasUntrackedFiles && opt.DirtyIfUntracked) &&
+		!wanted.DirtyFiles && facts.IsDirty {
+		log.Print("QA notice: unwanted IsDirty")
+		facts.IsDirty = false
+	}
+	if !wanted.DirtyFiles && (facts.HasAddedFiles || facts.AddedFiles != 0 ||
+		facts.HasModifiedFiles || facts.ModifiedFiles != 0 ||
+		facts.HasDeletedFiles || facts.DeletedFiles != 0 ||
+		facts.HasRenamedFiles || facts.RenamedFiles != 0 ||
+		facts.HasUnmergedFiles || facts.UnmergedFiles != 0) {
+		log.Print("QA notice: unwanted (Has)?(Added|Modified|Deleted|Renamed|Unmerged)Files")
+		facts.HasAddedFiles = false
+		facts.HasModifiedFiles = false
+		facts.HasDeletedFiles = false
+		facts.HasRenamedFiles = false
+		facts.HasUnmergedFiles = false
+		facts.AddedFiles = 0
+		facts.ModifiedFiles = 0
+		facts.DeletedFiles = 0
+		facts.RenamedFiles = 0
+		facts.UnmergedFiles = 0
+	}
 }
 
 // VCSType is VCS enumeration.
@@ -78,6 +165,7 @@ type VCSAction int
 
 // Goals:
 // - vcprompt drop-in replacement mode
+//   * rename binary in GH releases? move to cmd/vcprompt/?
 // - provide much more facts - like oh-my-zsh
 // - 100% user-configurable result
 //   * to split facts into PS1/RPS1 - just output list with all facts to
