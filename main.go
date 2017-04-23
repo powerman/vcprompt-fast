@@ -17,7 +17,7 @@ type VCSInfoWanted struct {
 	Branch                bool
 	Tag                   bool
 	Action                bool
-	HasRemote             bool
+	HasRemote             bool // imply Branch
 	RemoteDivergedCommits bool // imply HasRemote
 	HasStashedCommits     bool
 	StashedCommits        bool // imply HasStashedCommits
@@ -81,7 +81,7 @@ func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
 		log.Print("QA notice: unwanted RevisionShort")
 		facts.RevisionShort = ""
 	}
-	if !wanted.Branch && facts.Branch != "" {
+	if !wanted.Branch && !wanted.HasRemote && !wanted.RemoteDivergedCommits && facts.Branch != "" {
 		log.Print("QA notice: unwanted Branch")
 		facts.Branch = ""
 	}
@@ -93,7 +93,7 @@ func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
 		log.Print("QA notice: unwanted Action")
 		facts.Action = 0
 	}
-	if (!wanted.HasRemote && !wanted.RemoteDivergedCommits) && facts.HasRemote == true {
+	if !wanted.HasRemote && !wanted.RemoteDivergedCommits && facts.HasRemote == true {
 		log.Print("QA notice: unwanted HasRemote")
 		facts.HasRemote = false
 	}
@@ -102,7 +102,7 @@ func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
 		facts.RemoteAheadCommits = 0
 		facts.RemoteBehindCommits = 0
 	}
-	if (!wanted.HasStashedCommits && !wanted.StashedCommits) && facts.HasStashedCommits {
+	if !wanted.HasStashedCommits && !wanted.StashedCommits && facts.HasStashedCommits {
 		log.Print("QA notice: unwanted HasStashedCommits")
 		facts.HasStashedCommits = false
 	}

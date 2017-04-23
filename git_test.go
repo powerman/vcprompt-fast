@@ -6,12 +6,16 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "gopkg.in/check.v1"
 )
 
 func git(args string) {
-	err := exec.Command("git", strings.Split(args, " ")...).Run()
+	cmd := exec.Command("git", strings.Split(args, " ")...)
+	// cmd.Stdout = os.Stdout
+	// cmd.Stderr = os.Stderr
+	err := cmd.Run()
 	if err != nil {
 		panic(err)
 	}
@@ -68,6 +72,7 @@ func (s *GitSuite) SetUpTest(c *C) {
 	git("init")
 	git("config user.email root@localhost")
 	git("config user.name Nobody")
+	git("config commit.gpgsign false") // in case ~/.gitconfig contains true
 }
 
 func (s *GitSuite) TearDownTest(c *C) {}
@@ -89,14 +94,14 @@ func (s *GitSuite) TestGitEmptyRepo(c *C) {
 }
 
 func (s *GitSuite) TestGitRevision(c *C) {
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg1")
 	s.wanted.Revision = true
 	c.Assert(s.VCSInfoGit(), NotNil)
 	c.Check(s.res.RevisionShort, Matches, "^[0-9a-f]{7}$")
 }
 
 func (s *GitSuite) TestGitBranch(c *C) {
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg1")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // default
 	git("checkout -b fix-a")
 	s.want.Branch = "fix-a"
@@ -106,7 +111,7 @@ func (s *GitSuite) TestGitBranch(c *C) {
 	git("checkout fix/b")
 	s.want.Branch = "fix/b"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // switch
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg2")
 	git("checkout @^")
 	s.want.Branch = ""
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // detached HEAD
@@ -114,53 +119,63 @@ func (s *GitSuite) TestGitBranch(c *C) {
 	s.want.Branch = "master"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // attached
 	s.wanted.Branch = false
+	s.wanted.HasRemote = false
+	s.wanted.RemoteDivergedCommits = false
 	s.want.Branch = ""
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled
 }
 
+// TODO add test: non-annotated tags are ignored
 func (s *GitSuite) TestGitTag(c *C) {
 	s.wanted.Branch = false
+	s.wanted.HasRemote = false
+	s.wanted.RemoteDivergedCommits = false
 	s.want.Branch = ""
-	git("commit --allow-empty -m msg")
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg1")
+	git("commit --allow-empty -m msg2")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // none
-	git("tag v1.0.0")
+	git("tag -a v1.0.0 -m msg")
 	s.want.Tag = "v1.0.0"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // current
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg3")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // previous
-	git("tag alpha")
+	git("tag -a alpha -m msg")
+	time.Sleep(time.Second) // make sure next tag will have later time
 	s.want.Tag = "alpha"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // current (with previous)
-	git("tag gamma")
+	git("tag -a gamma -m msg")
+	time.Sleep(time.Second) // make sure next tag will have later time
 	s.want.Tag = "gamma"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // latest (or ordered?)
-	git("tag beta")
+	git("tag -a beta -m msg")
+	time.Sleep(time.Second) // make sure next tag will have later time
 	s.want.Tag = "beta"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // latest!
 	git("checkout -b fix/a")
-	git("commit --allow-empty -m msg")
-	git("tag v1.0.1")
+	git("commit --allow-empty -m msg4")
+	git("tag -a v1.0.1 -m msg")
+	time.Sleep(time.Second) // make sure next tag will have later time
 	s.want.Tag = "v1.0.1"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // v1.0.1
 	git("checkout -b fix/b")
-	git("commit --allow-empty -m msg")
-	git("tag v1.0.2")
+	git("commit --allow-empty -m msg5")
+	git("tag -a v1.0.2 -m msg")
+	time.Sleep(time.Second) // make sure next tag will have later time
 	s.want.Tag = "v1.0.2"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // v1.0.2
 	git("checkout fix/a")
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg6")
 	s.want.Tag = "v1.0.1"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // more work on v1.0.1
 	git("checkout fix/b")
-	git("commit --allow-empty -m msg")
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg7")
+	git("commit --allow-empty -m msg8")
 	s.want.Tag = "v1.0.2"
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // more work on v1.0.2
 	git("checkout master")
-	git("merge --no-ff fix/b -m msg")
+	git("merge --no-ff fix/b -m msgM1")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // latest (or parent?)
-	git("merge --no-ff fix/a -m msg")
+	git("merge --no-ff fix/a -m msgM2")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // latest!
 	s.wanted.Tag = false
 	s.want.Tag = ""
@@ -174,16 +189,21 @@ func (s *GitSuite) TestGitRemote(c *C) {
 	c.Assert(os.Remove(cloneDir), IsNil)
 	c.Assert(originDir, Matches, "^\\S*$") // required to split git params
 	c.Assert(cloneDir, Matches, "^\\S*$")  // required to split git params
+	git("config receive.denyCurrentBranch ignore")
+	git("commit --allow-empty -m msg1") // avoid cloning empty repo
 	git("clone " + originDir + " " + cloneDir)
 
 	c.Assert(os.Chdir(cloneDir), IsNil)
+	git("config user.email root@localhost")
+	git("config user.name Nobody")
+	git("config commit.gpgsign false") // in case ~/.gitconfig contains true
 	s.want.HasRemote = true
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone has remote
 	c.Assert(os.Chdir(originDir), IsNil)
 	s.want.HasRemote = false
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // origin has no remote
 	c.Assert(os.Chdir(cloneDir), IsNil)
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg2")
 	s.want.HasRemote = true
 	s.want.RemoteAheadCommits = 1
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone go forward
@@ -191,16 +211,17 @@ func (s *GitSuite) TestGitRemote(c *C) {
 	s.want.RemoteAheadCommits = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone push
 	c.Assert(os.Chdir(originDir), IsNil)
-	git("commit --allow-empty -m msg")
-	git("commit --allow-empty -m msg")
+	git("reset --hard") // after push into non-bare repo
+	git("commit --allow-empty -m msg3")
+	git("commit --allow-empty -m msg4")
 	c.Assert(os.Chdir(cloneDir), IsNil)
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone unaware
 	git("fetch")
 	s.want.RemoteBehindCommits = 2
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone behind
-	git("commit --allow-empty -m msg")
-	git("commit --allow-empty -m msg")
-	git("commit --allow-empty -m msg")
+	git("commit --allow-empty -m msg5")
+	git("commit --allow-empty -m msg6")
+	git("commit --allow-empty -m msg7")
 	s.want.RemoteAheadCommits = 3
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone diverse
 	s.wanted.RemoteDivergedCommits = false
@@ -208,8 +229,16 @@ func (s *GitSuite) TestGitRemote(c *C) {
 	s.want.RemoteBehindCommits = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disable diverged
 	s.wanted.RemoteDivergedCommits = true
+	git("checkout @^")
+	s.want.Branch = ""
+	s.want.HasRemote = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // detached HEAD
+	git("checkout master")
+	s.want.Branch = "master"
+	s.want.HasRemote = true
 	s.want.RemoteAheadCommits = 3
-	git("merge origin master")
+	git("merge origin/master")
+	s.want.RemoteAheadCommits = 4
 	s.want.RemoteBehindCommits = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone updated
 	git("push")
@@ -217,19 +246,19 @@ func (s *GitSuite) TestGitRemote(c *C) {
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone in sync
 	git("remote add fake http://localhost/")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone has remotes
+	s.wanted.RemoteDivergedCommits = false
 	s.wanted.HasRemote = false
 	s.want.HasRemote = false
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled
+	s.wanted.RemoteDivergedCommits = true
 	s.wanted.HasRemote = true
 	git("remote rm origin")
-	s.want.HasRemote = true
-	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone has remote
-	git("remote rm fake")
 	s.want.HasRemote = false
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // clone has no remote
 }
 
 func (s *GitSuite) TestGitStash(c *C) {
+	git("commit --allow-empty -m msg1") // avoid stashing empty repo
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	git("stash -u")
 	s.want.HasStashedCommits = true
@@ -239,20 +268,20 @@ func (s *GitSuite) TestGitStash(c *C) {
 	git("stash -u")
 	s.want.StashedCommits = 2
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // more stashed
-	s.wanted.HasStashedCommits = false
-	s.want.HasStashedCommits = false
-	s.want.StashedCommits = 0
-	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled
-	s.wanted.HasStashedCommits = true
 	s.wanted.StashedCommits = false
 	s.want.HasStashedCommits = true
 	s.want.StashedCommits = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // count disabled
+	s.wanted.HasStashedCommits = false
+	s.want.HasStashedCommits = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled
 	s.wanted.StashedCommits = true
 	git("stash pop")
+	s.want.HasStashedCommits = true
 	s.want.StashedCommits = 1
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // less stashed
 	git("stash pop")
+	s.want.HasStashedCommits = false
 	s.want.StashedCommits = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // nothing stashed
 }
@@ -318,7 +347,7 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	s.want.AddedFiles = 1                       // probably it also may be 2
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added and modified
 
-	git("commit -m msg")
+	git("commit -m msg1")
 	s.want.HasAddedFiles = false
 	s.want.AddedFiles = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified
