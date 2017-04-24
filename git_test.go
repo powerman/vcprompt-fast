@@ -48,7 +48,9 @@ func (s *GitSuite) SetUpSuite(c *C) {
 func (s *GitSuite) SetUpTest(c *C) {
 	// These defaults make it easier to compare full VCSInfo.
 	s.opt = Options{
-		DirtyIfUntracked: true,
+		DirtyIfUntracked:    true,
+		RenamesFromRewrites: true, // TODO
+		IncludeSubmodules:   true, // TODO
 	}
 	s.wanted = VCSInfoWanted{
 		Revision:              false,
@@ -59,9 +61,10 @@ func (s *GitSuite) SetUpTest(c *C) {
 		RemoteDivergedCommits: true,
 		HasStashedCommits:     true,
 		StashedCommits:        true,
-		HasUntrackedFiles:     true,
 		IsDirty:               true,
 		DirtyFiles:            true,
+		HasRenamedFiles:       true,
+		HasUntrackedFiles:     true,
 	}
 	s.res = nil
 	s.want = &VCSInfo{
@@ -92,6 +95,8 @@ func (s *GitSuite) TestGitEmptyRepo(c *C) {
 	s.want.Branch = ""
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want)
 }
+
+// TODO: Test for relocated repo (.git is a file, not dir).
 
 func (s *GitSuite) TestGitRevision(c *C) {
 	git("commit --allow-empty -m msg1")
@@ -258,6 +263,10 @@ func (s *GitSuite) TestGitRemote(c *C) {
 }
 
 func (s *GitSuite) TestGitStash(c *C) {
+	s.wanted.IsDirty = false
+	s.wanted.DirtyFiles = false
+	s.wanted.HasRenamedFiles = false
+	s.wanted.HasUntrackedFiles = false
 	git("commit --allow-empty -m msg1") // avoid stashing empty repo
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	git("stash -u")
@@ -287,8 +296,11 @@ func (s *GitSuite) TestGitStash(c *C) {
 }
 
 func (s *GitSuite) TestGitHasUntrackedFiles(c *C) {
+	s.opt.DirtyIfUntracked = false
 	s.wanted.IsDirty = false
 	s.wanted.DirtyFiles = false
+	s.wanted.HasRenamedFiles = false
+	git("commit --allow-empty -m msg1") // want master branch
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	s.want.HasUntrackedFiles = true
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // untracked
@@ -301,19 +313,27 @@ func (s *GitSuite) TestGitHasUntrackedFiles(c *C) {
 }
 
 func (s *GitSuite) TestGitIsDirty_IfUntracked(c *C) {
-	s.wanted.HasUntrackedFiles = false
 	s.wanted.DirtyFiles = false
+	s.wanted.HasRenamedFiles = false
+	git("commit --allow-empty -m msg1") // want master branch
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	c.Assert(ioutil.WriteFile("b.txt", nil, 0666), IsNil)
 	s.opt.DirtyIfUntracked = false
 	s.want.IsDirty = false
+	s.want.HasUntrackedFiles = s.wanted.HasUntrackedFiles
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // untracked is not dirty
 	s.opt.DirtyIfUntracked = true
 	s.want.IsDirty = true
+	s.want.HasUntrackedFiles = true
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // untracked is dirty
 	git("add -- a.txt")
-	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added is dirty
+	// s.res.HasUntrackedFiles depends on optimization: if added file
+	// will be found first and optimization prevent checking other files
+	// then untracked file won't be found.
+	c.Assert(s.VCSInfoGit(), NotNil)
+	c.Check(s.res.IsDirty, DeepEquals, true) // added is dirty
 	s.opt.DirtyIfUntracked = false
+	s.want.HasUntrackedFiles = s.wanted.HasUntrackedFiles
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added is always dirty
 	git("reset -- a.txt")
 	s.want.IsDirty = false
@@ -326,10 +346,16 @@ func (s *GitSuite) TestGitIsDirty_IfUntracked_Unwanted(c *C) {
 }
 
 // UnmergedFiles will be tested with Action, not here.
+// TODO Test for: dirty submodules (add option to not(?) ignore).
+// TODO Test for: each possible status both in index, workdir and both
+// TODO Test for: file mtime, mode (chmod +x) and type (dir/file) change
+// TODO Test for: file renames, and renames with minor change (rewrite)
 func (s *GitSuite) TestGitDirtyFiles(c *C) {
+	s.opt.DirtyIfUntracked = false
 	s.wanted.HasUntrackedFiles = false
 	s.want.IsDirty = true
 
+	git("commit --allow-empty -m msg1") // want master branch
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	c.Assert(ioutil.WriteFile("b.txt", nil, 0666), IsNil)
 	git("add -- a.txt")
@@ -344,7 +370,7 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Assert(ioutil.WriteFile("a.txt", []byte("adata"), 0666), IsNil)
 	s.want.HasModifiedFiles = true
 	s.want.ModifiedFiles = 1
-	s.want.AddedFiles = 1                       // probably it also may be 2
+	s.want.AddedFiles = 2
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added and modified
 
 	git("commit -m msg1")
@@ -382,7 +408,6 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Assert(os.Remove("b2.txt"), IsNil)
 	s.want.HasDeletedFiles = true
 	s.want.DeletedFiles = 1
-	s.want.RenamedFiles = 1
 	c.Assert(ioutil.WriteFile("c.txt", nil, 0666), IsNil)
 	c.Assert(ioutil.WriteFile("d.txt", nil, 0666), IsNil)
 	git("add -- c.txt d.txt")
@@ -391,14 +416,14 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Assert(ioutil.WriteFile("c.txt", []byte("cdata"), 0666), IsNil)
 	s.want.HasModifiedFiles = true
 	s.want.ModifiedFiles = 1
-	s.want.AddedFiles = 1
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added, modified, deleted, renamed
 
 	s.wanted.DirtyFiles = false
-	s.want.HasAddedFiles = true
-	s.want.HasModifiedFiles = true
-	s.want.HasDeletedFiles = true
-	s.want.HasRenamedFiles = true
+	s.wanted.HasRenamedFiles = false
+	s.want.HasAddedFiles = false
+	s.want.HasModifiedFiles = false
+	s.want.HasDeletedFiles = false
+	s.want.HasRenamedFiles = false
 	s.want.AddedFiles = 0
 	s.want.ModifiedFiles = 0
 	s.want.DeletedFiles = 0
@@ -406,24 +431,21 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled DirtyFiles
 	s.wanted.IsDirty = false
 	s.want.IsDirty = false
-	s.want.HasAddedFiles = false
-	s.want.HasModifiedFiles = false
-	s.want.HasDeletedFiles = false
-	s.want.HasRenamedFiles = false
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled IsDirty & DirtyFiles
 	s.wanted.DirtyFiles = true
+	s.want.IsDirty = true
 	s.want.HasAddedFiles = true
 	s.want.HasModifiedFiles = true
 	s.want.HasDeletedFiles = true
-	s.want.HasRenamedFiles = true
-	s.want.AddedFiles = 1
+	s.want.HasRenamedFiles = false
+	s.want.AddedFiles = 4
 	s.want.ModifiedFiles = 1
-	s.want.DeletedFiles = 1
-	s.want.RenamedFiles = 1
+	s.want.DeletedFiles = 3
+	s.want.RenamedFiles = 0
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // disabled IsDirty
 }
 
-// Actions: TODO (check supported by vcs-info)
+// Actions: TODO
 // - merge interrupted:
 //   * checkout -b fix; commit; checkout master: none
 //   * merge --no-ff fix -m '': merge

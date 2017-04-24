@@ -8,7 +8,9 @@ import (
 // Options contains common options provided by user.
 // Different implementations may ignore some options.
 type Options struct {
-	DirtyIfUntracked bool
+	DirtyIfUntracked    bool
+	RenamesFromRewrites bool
+	IncludeSubmodules   bool
 }
 
 // VCSInfoWanted lists facts requested by user.
@@ -21,9 +23,10 @@ type VCSInfoWanted struct {
 	RemoteDivergedCommits bool // imply HasRemote
 	HasStashedCommits     bool
 	StashedCommits        bool // imply HasStashedCommits
-	HasUntrackedFiles     bool // do NOT imply IsDirty!
 	IsDirty               bool // may imply HasUntrackedFiles
 	DirtyFiles            bool // do NOT imply IsDirty!
+	HasRenamedFiles       bool // imply DirtyFiles, may be slow
+	HasUntrackedFiles     bool // do NOT imply IsDirty!
 }
 
 // VCSInfo contains gathered facts about repo as general flat list, common
@@ -34,14 +37,13 @@ type VCSInfo struct {
 	VCS                 VCSType
 	RevisionShort       string
 	Branch              string // Hg "bookmark"?
-	Tag                 string // latest, if more than one?
+	Tag                 string // latest reachable from HEAD
 	Action              VCSAction
 	HasRemote           bool
 	RemoteAheadCommits  int
 	RemoteBehindCommits int
 	HasStashedCommits   bool // only git?
 	StashedCommits      int
-	HasUntrackedFiles   bool // too slow to even try to find how many
 	IsDirty             bool // Untracked? || Unmerged||Deleted||Renamed||Modified||Added
 	HasAddedFiles       bool
 	HasModifiedFiles    bool
@@ -53,6 +55,7 @@ type VCSInfo struct {
 	DeletedFiles        int
 	RenamedFiles        int
 	UnmergedFiles       int
+	HasUntrackedFiles   bool // too slow to even try to find how many
 	// TODO Patch info
 }
 
@@ -73,9 +76,9 @@ func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
 	facts.HasRenamedFiles = facts.HasRenamedFiles || facts.RenamedFiles != 0
 	facts.HasUnmergedFiles = facts.HasUnmergedFiles || facts.UnmergedFiles != 0
 	facts.IsDirty = facts.IsDirty ||
-		(facts.HasUntrackedFiles && opt.DirtyIfUntracked) ||
 		facts.HasAddedFiles || facts.HasModifiedFiles || facts.HasDeletedFiles ||
-		facts.HasRenamedFiles || facts.HasUnmergedFiles
+		facts.HasRenamedFiles || facts.HasUnmergedFiles ||
+		(facts.HasUntrackedFiles && opt.DirtyIfUntracked)
 
 	if !wanted.Revision && facts.RevisionShort != "" {
 		log.Print("QA notice: unwanted RevisionShort")
@@ -110,31 +113,34 @@ func (facts *VCSInfo) Fix(wanted VCSInfoWanted, opt Options) {
 		log.Print("QA notice: unwanted StashedCommits")
 		facts.StashedCommits = 0
 	}
-	if !wanted.HasUntrackedFiles && !(wanted.IsDirty && opt.DirtyIfUntracked) && facts.HasUntrackedFiles {
-		log.Print("QA notice: unwanted HasUntrackedFiles")
-		facts.HasUntrackedFiles = false
-	}
 	if !wanted.IsDirty && !(wanted.HasUntrackedFiles && opt.DirtyIfUntracked) &&
-		!wanted.DirtyFiles && facts.IsDirty {
+		!(wanted.DirtyFiles || wanted.HasRenamedFiles) && facts.IsDirty {
 		log.Print("QA notice: unwanted IsDirty")
 		facts.IsDirty = false
 	}
-	if !wanted.DirtyFiles && (facts.HasAddedFiles || facts.AddedFiles != 0 ||
-		facts.HasModifiedFiles || facts.ModifiedFiles != 0 ||
-		facts.HasDeletedFiles || facts.DeletedFiles != 0 ||
-		facts.HasRenamedFiles || facts.RenamedFiles != 0 ||
-		facts.HasUnmergedFiles || facts.UnmergedFiles != 0) {
-		log.Print("QA notice: unwanted (Has)?(Added|Modified|Deleted|Renamed|Unmerged)Files")
+	if !wanted.HasRenamedFiles && (facts.HasRenamedFiles || facts.RenamedFiles != 0) {
+		log.Print("QA notice: unwanted (Has)?RenamedFiles")
+		facts.HasRenamedFiles = false
+		facts.RenamedFiles = 0
+	}
+	if !(wanted.DirtyFiles || wanted.HasRenamedFiles) &&
+		(facts.HasAddedFiles || facts.AddedFiles != 0 ||
+			facts.HasModifiedFiles || facts.ModifiedFiles != 0 ||
+			facts.HasDeletedFiles || facts.DeletedFiles != 0 ||
+			facts.HasUnmergedFiles || facts.UnmergedFiles != 0) {
+		log.Print("QA notice: unwanted (Has)?(Added|Modified|Deleted|Unmerged)Files")
 		facts.HasAddedFiles = false
 		facts.HasModifiedFiles = false
 		facts.HasDeletedFiles = false
-		facts.HasRenamedFiles = false
 		facts.HasUnmergedFiles = false
 		facts.AddedFiles = 0
 		facts.ModifiedFiles = 0
 		facts.DeletedFiles = 0
-		facts.RenamedFiles = 0
 		facts.UnmergedFiles = 0
+	}
+	if !wanted.HasUntrackedFiles && !(wanted.IsDirty && opt.DirtyIfUntracked) && facts.HasUntrackedFiles {
+		log.Print("QA notice: unwanted HasUntrackedFiles")
+		facts.HasUntrackedFiles = false
 	}
 }
 
@@ -147,7 +153,7 @@ const (
 	VCSMercurial
 )
 
-// String returns string representation for VCS type.
+// String returns text representation for VCS type.
 func (name VCSType) String() string {
 	// TODO Use user-provided values (in env variable(s)?).
 	switch name {
@@ -162,6 +168,49 @@ func (name VCSType) String() string {
 
 // VCSAction is VCS state (merge conflict, interactive rebase, …) enumeration.
 type VCSAction int
+
+const (
+	// Current repo state/action (most probably git-specific).
+	ActionNone VCSAction = iota
+	ActionMerge
+	ActionRevert
+	ActionCherrypick
+	ActionBisect
+	ActionRebase
+	ActionRebaseInteractive
+	ActionRebaseMerge
+	ActionApplyMailbox
+	ActionApplyMailboxOrRebase
+)
+
+// String returns text representation for VCS action/state.
+func (action VCSAction) String() string {
+	// TODO Use user-provided values (in env variable(s)?).
+	switch action {
+	case ActionNone:
+		return ""
+	case ActionMerge:
+		return "merge"
+	case ActionRevert:
+		return "revert"
+	case ActionCherrypick:
+		return "cherry"
+	case ActionBisect:
+		return "bisect"
+	case ActionRebase:
+		return "rebase"
+	case ActionRebaseInteractive:
+		return "rebase-i"
+	case ActionRebaseMerge:
+		return "rebase-m"
+	case ActionApplyMailbox:
+		return "am"
+	case ActionApplyMailboxOrRebase:
+		return "am/rebase"
+	default:
+		panic(fmt.Sprintf("unknown VCSAction: %d", action))
+	}
+}
 
 // Goals:
 // - vcprompt drop-in replacement mode
