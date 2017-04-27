@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"testing"
 	"time"
 
 	. "gopkg.in/check.v1"
@@ -180,6 +181,10 @@ func (s *GitSuite) TestGitBranch(c *C) {
 }
 
 func (s *GitSuite) TestGitTag(c *C) {
+	if testing.Short() {
+		c.Skip("slow test")
+	}
+
 	s.req.Attr.Branch = false
 
 	git("commit --allow-empty -m ROOT")
@@ -225,6 +230,10 @@ func (s *GitSuite) TestGitTag(c *C) {
 }
 
 func (s *GitSuite) TestGitTag_LatestVSName(c *C) {
+	if testing.Short() {
+		c.Skip("slow test")
+	}
+
 	s.req.Attr.Branch = false
 
 	git("commit --allow-empty -m ROOT")
@@ -242,6 +251,10 @@ func (s *GitSuite) TestGitTag_LatestVSName(c *C) {
 }
 
 func (s *GitSuite) TestGitTag_Lightweight(c *C) {
+	if testing.Short() {
+		c.Skip("slow test")
+	}
+
 	s.req.Attr.Branch = false
 
 	git("commit --allow-empty -m ROOT")
