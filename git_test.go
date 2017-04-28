@@ -26,6 +26,11 @@ func git(args string) {
 	}
 }
 
+func gitforce(args string) {
+	defer func() { recover() }()
+	git(args)
+}
+
 // for debugging tests
 func gitstatus() {
 	cmd := exec.Command("git", "status", "--short")
@@ -37,6 +42,7 @@ func gitstatus() {
 func gitconfig() {
 	git("config user.email root@localhost")
 	git("config user.name Nobody")
+	git("config core.editor true")
 	git("config commit.gpgsign false") // in case ~/.gitconfig contains true
 }
 
@@ -58,7 +64,7 @@ func (s *GitSuite) VCSInfoGit() Attr {
 	return s.res
 }
 
-func (s *GitSuite) enable_possible_optimizations() {
+func (s *GitSuite) enablePossibleOptimizations() {
 	// IsDirty and DirtyIfUntracked are excluded from this list
 	// because they sometimes needs to be set in test wrapper func,
 	// before call to this func.
@@ -90,7 +96,7 @@ func (s *GitSuite) SetUpTest(c *C) {
 			RevisionShort:       false,
 			Branch:              true,
 			Tag:                 true,
-			State:               true, // TODO
+			State:               true,
 			HasRemote:           true,
 			CommitsAheadRemote:  true,
 			CommitsBehindRemote: true,
@@ -105,13 +111,13 @@ func (s *GitSuite) SetUpTest(c *C) {
 			DeletedFiles:        true,
 			HasRenamedFiles:     true,
 			RenamedFiles:        true,
-			HasUnmergedFiles:    true, // TODO
-			UnmergedFiles:       true, // TODO
+			HasUnmergedFiles:    true,
+			UnmergedFiles:       true,
 			HasUntrackedFiles:   true,
 		},
 		DirtyIfUntracked:    true,
 		RenamesFromRewrites: true,
-		IncludeSubmodules:   true, // TODO
+		IncludeSubmodules:   true,
 	}
 	s.res = Attr{}
 	s.want = Attr{
@@ -392,7 +398,7 @@ func (s *GitSuite) TestGitStash(c *C) {
 }
 
 func (s *GitSuite) TestGitHasUntrackedFiles(c *C) {
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.IsDirty = false
 	s.req.Attr.HasUntrackedFiles = true
 
@@ -467,7 +473,7 @@ func (s *GitSuite) TestGitIsDirty_IfUntracked_HEAD2(c *C) {
 }
 
 func (s *GitSuite) TestGitAddedFiles(c *C) {
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.HasAddedFiles = true
 	s.req.Attr.AddedFiles = true
 	s.want.IsDirty = s.req.Attr.IsDirty
@@ -516,7 +522,7 @@ func (s *GitSuite) TestGitAddedFiles_HEAD2(c *C) {
 }
 
 func (s *GitSuite) TestGitModifiedFiles(c *C) {
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.HasModifiedFiles = true
 	s.req.Attr.ModifiedFiles = true
 	s.want.IsDirty = s.req.Attr.IsDirty
@@ -569,7 +575,7 @@ func (s *GitSuite) TestGitModifiedFiles2(c *C) {
 }
 
 func (s *GitSuite) TestGitDeletedFiles(c *C) {
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.HasDeletedFiles = true
 	s.req.Attr.DeletedFiles = true
 	s.want.IsDirty = s.req.Attr.IsDirty
@@ -616,7 +622,7 @@ func (s *GitSuite) TestGitDeletedFiles2(c *C) {
 const rewriteBlock = 80 // `git status` use 64
 
 func (s *GitSuite) TestGitRenamedFiles(c *C) {
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.HasRenamedFiles = true
 	s.req.Attr.RenamedFiles = true
 	s.want.IsDirty = s.req.Attr.IsDirty
@@ -667,7 +673,7 @@ func (s *GitSuite) TestGitRenamedFiles2(c *C) {
 
 func (s *GitSuite) TestGitRenamesFromRewrites(c *C) {
 	c.ExpectFailure("https://github.com/libgit2/git2go/issues/380")
-	s.enable_possible_optimizations()
+	s.enablePossibleOptimizations()
 	s.req.Attr.HasRenamedFiles = true
 	s.req.Attr.RenamedFiles = true
 	s.want.IsDirty = s.req.Attr.IsDirty
@@ -693,6 +699,32 @@ func (s *GitSuite) TestGitRenamesFromRewrites(c *C) {
 func (s *GitSuite) TestGitRenamesFromRewrites2(c *C) {
 	s.req.Attr.IsDirty = !s.req.Attr.IsDirty
 	s.TestGitRenamesFromRewrites(c)
+}
+
+func (s *GitSuite) TestGitIncludeSubmodules(c *C) {
+	s.enablePossibleOptimizations()
+	s.want.Branch = "master"
+
+	libraryDir, err := os.Getwd()
+	c.Assert(err, IsNil)
+	c.Assert(libraryDir, Matches, "^\\S*$") // required to split git params
+	git("commit --allow-empty -m ROOT")     // needs not empty repo for clone
+
+	c.Assert(os.Chdir(c.MkDir()), IsNil)
+	git("init")
+	gitconfig()
+	git("submodule add " + libraryDir + " extlib")
+	git("commit -m msg1")
+
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // added submodule
+
+	c.Assert(ioutil.WriteFile("extlib/a.txt", nil, 0666), IsNil)
+	s.want.IsDirty = true
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified submodule
+
+	s.req.IncludeSubmodules = false
+	s.want.IsDirty = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // not IncludeSubmodules
 }
 
 func (s *GitSuite) TestGitDirtyFiles(c *C) {
@@ -740,12 +772,109 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want)
 }
 
-// States: TODO
-// - merge interrupted:
-//   * checkout -b fix; commit; checkout master: none
-//   * merge --no-ff fix -m '': merge
-//   * merge --abort: none
-//   * merge --no-ff fix -m '': merge
-//   * commit -m msg: none
-// - merge conflict:
-//   * TODO UnmergedFiles
+// TODO State tests should be improved to check more states/cases.
+
+func (s *GitSuite) TestGitStateMerge(c *C) {
+	s.req.Attr.AddedFiles = false
+	s.req.Attr.ModifiedFiles = false
+	s.req.Attr.DeletedFiles = false
+	s.req.Attr.RenamedFiles = false
+	git("commit --allow-empty -m ROOT") // can we get any state without root commit?
+	s.want.Branch = "master"
+
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a1"), 0666), IsNil)
+	git("add a.txt")
+	git("commit -m msg1")
+	git("checkout -b set2")
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a2"), 0666), IsNil)
+	git("commit -am msg2")
+	git("checkout -b set3 master")
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a3"), 0666), IsNil)
+	git("commit -am msg3")
+	git("checkout master")
+
+	s.want.State = StateNone
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // no state yet
+
+	gitforce("merge --no-ff set2 -m ") // empty commit message
+	s.want.State = StateMerge
+	s.want.IsDirty = true
+	s.want.HasModifiedFiles = true
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge interrupted
+
+	git("merge --abort")
+	s.want.State = StateNone
+	s.want.IsDirty = false
+	s.want.HasModifiedFiles = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge aborted
+
+	gitforce("merge --no-ff set2 -m ") // empty commit message
+	git("commit -m merge_set2")
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge interrupted, completed
+
+	gitforce("merge --no-ff set3 -m merge_set3")
+	s.want.State = StateMerge
+	s.want.IsDirty = true
+	s.want.HasUnmergedFiles = true
+	s.want.UnmergedFiles = 1
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge conflict
+
+	git("add -- a.txt")
+	s.want.HasModifiedFiles = true
+	s.want.HasUnmergedFiles = false
+	s.want.UnmergedFiles = 0
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge conflict resolved
+
+	git("commit -m merge_set3")
+	s.want.State = StateNone
+	s.want.IsDirty = false
+	s.want.HasModifiedFiles = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // merge completed
+}
+
+func (s *GitSuite) TestGitStateRevert(c *C) {
+	s.req.Attr.AddedFiles = false
+	s.req.Attr.ModifiedFiles = false
+	s.req.Attr.DeletedFiles = false
+	s.req.Attr.RenamedFiles = false
+	git("commit --allow-empty -m ROOT") // can we get any state without root commit?
+	s.want.Branch = "master"
+
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a1"), 0666), IsNil)
+	git("add a.txt")
+	git("commit -m msg1")
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a2"), 0666), IsNil)
+	git("commit -am msg2")
+	c.Assert(ioutil.WriteFile("a.txt", []byte("a3"), 0666), IsNil)
+	git("commit -am msg3")
+
+	s.want.State = StateNone
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // no state yet
+
+	gitforce("revert HEAD~")
+	s.want.State = StateRevert
+	s.want.IsDirty = true
+	s.want.HasUnmergedFiles = true
+	s.want.UnmergedFiles = 1
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // revert conflict
+
+	git("revert --abort")
+	s.want.State = StateNone
+	s.want.IsDirty = false
+	s.want.HasUnmergedFiles = false
+	s.want.UnmergedFiles = 0
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // revert aborted
+
+	gitforce("revert HEAD~")
+	git("add -- a.txt")
+	s.want.State = StateRevert
+	s.want.IsDirty = true
+	s.want.HasModifiedFiles = true
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // revert conflict resolved
+
+	git("revert --continue")
+	s.want.State = StateNone
+	s.want.IsDirty = false
+	s.want.HasModifiedFiles = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // revert completed
+}
