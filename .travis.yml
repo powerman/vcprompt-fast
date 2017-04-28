@@ -1,5 +1,12 @@
 sudo: false
 
+addons:
+  apt:
+    sources:
+    - git-core
+    packages:
+    - git # needs modern enough git to pass tests
+
 language: go
 
 go:
@@ -10,6 +17,11 @@ before_install:
   - go get github.com/axw/gocov/gocov
   - go get github.com/mattn/goveralls
   - go get golang.org/x/tools/cmd/cover
+  - go get -d github.com/libgit2/git2go
+
+install:
+  - (cd $GOPATH/src/github.com/libgit2/git2go && ./script/build-libgit2-static.sh)
+  - go get -tags static -t -v ./...
 
 script:
   - go test -tags static -v -check.v -race ./...
