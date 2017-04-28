@@ -26,6 +26,14 @@ func git(args string) {
 	}
 }
 
+// for debugging tests
+func gitstatus() {
+	cmd := exec.Command("git", "status", "--short")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+}
+
 func gitconfig() {
 	git("config user.email root@localhost")
 	git("config user.name Nobody")
@@ -95,14 +103,14 @@ func (s *GitSuite) SetUpTest(c *C) {
 			ModifiedFiles:       true,
 			HasDeletedFiles:     true,
 			DeletedFiles:        true,
-			HasRenamedFiles:     true, // TODO
-			RenamedFiles:        true, // TODO
+			HasRenamedFiles:     true,
+			RenamedFiles:        true,
 			HasUnmergedFiles:    true, // TODO
 			UnmergedFiles:       true, // TODO
 			HasUntrackedFiles:   true,
 		},
 		DirtyIfUntracked:    true,
-		RenamesFromRewrites: true, // TODO rewrite 64-65-63 bytes
+		RenamesFromRewrites: true,
 		IncludeSubmodules:   true, // TODO
 	}
 	s.res = Attr{}
@@ -507,8 +515,6 @@ func (s *GitSuite) TestGitAddedFiles_HEAD2(c *C) {
 	s.TestGitAddedFiles2(c)
 }
 
-// TODO Test for: mode (chmod +x) and type (file/symlink) change
-// TODO Test for: each possible status both in index, workdir and both
 func (s *GitSuite) TestGitModifiedFiles(c *C) {
 	s.enable_possible_optimizations()
 	s.req.Attr.HasModifiedFiles = true
@@ -517,19 +523,30 @@ func (s *GitSuite) TestGitModifiedFiles(c *C) {
 
 	c.Assert(ioutil.WriteFile("a.txt", nil, 0666), IsNil)
 	c.Assert(ioutil.WriteFile("b.txt", nil, 0666), IsNil)
-	git("add -- a.txt b.txt")
+	c.Assert(ioutil.WriteFile("c.txt", nil, 0666), IsNil)
+	git("add -- a.txt b.txt c.txt")
 	git("commit -m ROOT")
 	s.want.Branch = "master"
 
 	c.Assert(ioutil.WriteFile("a.txt", []byte("a"), 0666), IsNil)
 	s.want.HasModifiedFiles = true
 	s.want.ModifiedFiles = 1
-	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified one (workdir)
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified a (content)
 
-	c.Assert(ioutil.WriteFile("b.txt", []byte("b"), 0666), IsNil)
-	git("add -- b.txt")
+	c.Assert(os.Chmod("b.txt", 0755), IsNil)
 	s.want.ModifiedFiles = 2
-	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified two (index)
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified b (perm)
+
+	c.Assert(os.Remove("c.txt"), IsNil)
+	c.Assert(os.Symlink("a.txt", "c.txt"), IsNil)
+	s.want.ModifiedFiles = 3
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified c (type)
+
+	git("add -- a.txt")
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified (index+workdir)
+
+	git("add .")
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // modified (index)
 
 	s.req.Attr.HasModifiedFiles = false
 	s.want.HasModifiedFiles = false
@@ -551,7 +568,6 @@ func (s *GitSuite) TestGitModifiedFiles2(c *C) {
 	s.TestGitModifiedFiles(c)
 }
 
-// TODO Test for: each possible status both in index, workdir and both
 func (s *GitSuite) TestGitDeletedFiles(c *C) {
 	s.enable_possible_optimizations()
 	s.req.Attr.HasDeletedFiles = true
@@ -572,6 +588,9 @@ func (s *GitSuite) TestGitDeletedFiles(c *C) {
 	c.Assert(os.Remove("b.txt"), IsNil)
 	git("add -- b.txt")
 	s.want.DeletedFiles = 2
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // deleted two (index+workdir)
+
+	git("add .")
 	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // deleted two (index)
 
 	s.req.Attr.HasDeletedFiles = false
@@ -594,6 +613,88 @@ func (s *GitSuite) TestGitDeletedFiles2(c *C) {
 	s.TestGitDeletedFiles(c)
 }
 
+const rewriteBlock = 80 // `git status` use 64
+
+func (s *GitSuite) TestGitRenamedFiles(c *C) {
+	s.enable_possible_optimizations()
+	s.req.Attr.HasRenamedFiles = true
+	s.req.Attr.RenamedFiles = true
+	s.want.IsDirty = s.req.Attr.IsDirty
+
+	c.Assert(ioutil.WriteFile("a.txt", bytes.Repeat([]byte{'a'}, rewriteBlock), 0666), IsNil)
+	c.Assert(ioutil.WriteFile("b.txt", bytes.Repeat([]byte{'b'}, rewriteBlock), 0666), IsNil)
+	c.Assert(ioutil.WriteFile("c.txt", bytes.Repeat([]byte{'c'}, rewriteBlock), 0666), IsNil)
+	git("add -- a.txt b.txt c.txt")
+	git("commit -m ROOT")
+	s.want.Branch = "master"
+
+	c.Assert(os.Rename("a.txt", "a2.txt"), IsNil)
+	git("add .")
+	s.want.HasRenamedFiles = true
+	s.want.RenamedFiles = 1
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // rename a
+
+	c.Assert(os.Remove("b.txt"), IsNil)
+	c.Assert(ioutil.WriteFile("b2.txt", bytes.Repeat([]byte{'b'}, rewriteBlock+1), 0666), IsNil)
+	git("add -- b.txt b2.txt")
+	s.want.RenamedFiles = 2
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // rename b (minor)
+
+	c.Assert(os.Remove("c.txt"), IsNil)
+	c.Assert(ioutil.WriteFile("c2.txt", bytes.Repeat([]byte{'c'}, rewriteBlock-1), 0666), IsNil)
+	git("add -- c.txt c2.txt")
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // rename c (major)
+
+	s.req.Attr.HasRenamedFiles = false
+	s.want.HasRenamedFiles = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // without Has
+
+	s.req.Attr.HasRenamedFiles = true
+	s.req.Attr.RenamedFiles = false
+	s.want.HasRenamedFiles = true
+	s.want.RenamedFiles = 0
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // without amount
+
+	s.req.Attr.HasRenamedFiles = false
+	s.want.HasRenamedFiles = false
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // without Has&amount
+}
+
+func (s *GitSuite) TestGitRenamedFiles2(c *C) {
+	s.req.Attr.IsDirty = !s.req.Attr.IsDirty
+	s.TestGitRenamedFiles(c)
+}
+
+func (s *GitSuite) TestGitRenamesFromRewrites(c *C) {
+	c.ExpectFailure("https://github.com/libgit2/git2go/issues/380")
+	s.enable_possible_optimizations()
+	s.req.Attr.HasRenamedFiles = true
+	s.req.Attr.RenamedFiles = true
+	s.want.IsDirty = s.req.Attr.IsDirty
+
+	c.Assert(ioutil.WriteFile("a.txt", bytes.Repeat([]byte{'a'}, rewriteBlock), 0666), IsNil)
+	git("add -- a.txt")
+	git("commit -m ROOT")
+	s.want.Branch = "master"
+
+	c.Assert(os.Remove("a.txt"), IsNil)
+	c.Assert(ioutil.WriteFile("a2.txt", bytes.Repeat([]byte{'a'}, rewriteBlock+1), 0666), IsNil)
+	git("add -- a.txt a2.txt")
+	s.want.HasRenamedFiles = true
+	s.want.RenamedFiles = 1
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // RenamesFromRewrites
+
+	s.req.RenamesFromRewrites = false
+	s.want.HasRenamedFiles = false
+	s.want.RenamedFiles = 0
+	c.Check(s.VCSInfoGit(), DeepEquals, s.want) // no RenamesFromRewrites
+}
+
+func (s *GitSuite) TestGitRenamesFromRewrites2(c *C) {
+	s.req.Attr.IsDirty = !s.req.Attr.IsDirty
+	s.TestGitRenamesFromRewrites(c)
+}
+
 func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Assert(ioutil.WriteFile("added.txt", []byte("new"), 0666), IsNil)
 	c.Assert(ioutil.WriteFile("modified.txt", []byte("original"), 0666), IsNil)
@@ -608,6 +709,7 @@ func (s *GitSuite) TestGitDirtyFiles(c *C) {
 	c.Assert(ioutil.WriteFile("modified.txt", []byte("modified"), 0666), IsNil)
 	c.Assert(os.Remove("deleted.txt"), IsNil)
 	c.Assert(os.Rename("renamed.txt", "renamed2.txt"), IsNil)
+	git("add -- renamed.txt renamed2.txt")
 	s.want.IsDirty = true
 	s.want.HasAddedFiles = true
 	s.want.AddedFiles = 1

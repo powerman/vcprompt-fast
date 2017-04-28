@@ -221,8 +221,10 @@ StatusList:
 		}
 		if l.HasRenamedFiles {
 			statusOpt |= git2go.StatusOptRenamesHeadToIndex
-			statusOpt |= git2go.StatusOptRenamesIndexToWorkdir
+			// `git status` do not detect RenamesIndexToWorkdir
+			// statusOpt |= git2go.StatusOptRenamesIndexToWorkdir
 			if facts.Req.RenamesFromRewrites {
+				// BUG https://github.com/libgit2/git2go/issues/380
 				statusOpt |= git2go.StatusOptRenamesFromRewrites
 			}
 		}
