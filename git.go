@@ -29,6 +29,12 @@ import (
 //   * several exec may be needed to get all required info
 // - some combination of above implementations
 
+// XXX Performance: XXX
+// gentoo repo: 100K files, 113K commits, tag at HEAD~50000, 1 added 1 untracked.
+// - git2go is very slow! About 1.0 sec for tags + 0.6 sec for scan.
+// - `git status` works 0.29/0.13 sec without/with core.untrackedCache.
+// - `git describe` works 0.5 sec
+
 // VCSInfoGit returns git facts for current dir or nil on error.
 //
 // More facts than requested may be returned: some non-requested facts may
@@ -98,6 +104,7 @@ func VCSInfoGit(ctx context.Context, facts *Facts) {
 			return nil
 		})
 
+		// TODO OPTIMIZATION Skip walk if len(tags)==0.
 		revwalk, err := repo.Walk()
 		if err != nil {
 			log.Println("repo.Walk:", err)
